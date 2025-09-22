@@ -166,19 +166,21 @@ static PyObject * py_get_nonperiodic(PyObject *self, PyObject *args)
 
 static PyObject * py_get_periodic(PyObject *self, PyObject *args)
 {
-    int i, j, k, lmax, l, lseg, natx, flag, log, ldfp;
+    int i, j, k, lmax, l, lseg, natx, flag, log, ldfp, lstress;
     double cutoff;
-    double **sfp, **lfp, ****dfp;
+    double **sfp, **lfp, ****dfp, ***dfpe;
     PyArrayObject* py_lattice;
     PyArrayObject* py_positions;
     PyArrayObject* py_atom_type;
     PyArrayObject* py_znu;
-    PyObject* array, *vec, *vec1, *vec2, *shortfp, *longfp, ***outdfp;
+    PyObject* array, *vec, *vec1, *vec2, *shortfp, *longfp, ***outdfp, *outdfpe;
     PyObject* pytmp;
 
 
-    if (!PyArg_ParseTuple(args, "iiiOOOOiid", &flag, &ldfp, &log, &py_lattice, &py_positions, &py_atom_type, &py_znu,
-                &lmax, &natx,  &cutoff))
+    dfpe = NULL;
+
+    if (!PyArg_ParseTuple(args, "iiiiOOOOiid", &flag, &ldfp, &lstress, &log, &py_lattice, &py_positions,
+                &py_atom_type, &py_znu, &lmax, &natx,  &cutoff))
         return NULL;
 
 
@@ -270,8 +272,30 @@ static PyObject * py_get_periodic(PyObject *self, PyObject *args)
         }
     }
 
-    
-    get_fp_periodic(flag, ldfp, log, lmax, nat, ntyp, types, lat, rxyz, znuc, natx,  cutoff, sfp, lfp, dfp);
+    if (lstress > 0) {
+        dfpe = (double ***) malloc(sizeof(double **) * nat);
+        if (dfpe == NULL) {
+            fprintf(stderr, "Failed to allocate dfpe\n");
+            exit(EXIT_FAILURE);
+        }
+        for (i = 0; i < nat; i++) {
+            dfpe[i] = (double **) malloc(sizeof(double *) * 6);
+            if (dfpe[i] == NULL) {
+                fprintf(stderr, "Failed to allocate dfpe[%d]\n", i);
+                exit(EXIT_FAILURE);
+            }
+            for (j = 0; j < 6; j++) {
+                dfpe[i][j] = (double *) calloc(natx * lseg, sizeof(double));
+                if (dfpe[i][j] == NULL) {
+                    fprintf(stderr, "Failed to allocate dfpe[%d][%d]\n", i, j);
+                    exit(EXIT_FAILURE);
+                }
+            }
+        }
+    }
+
+    get_fp_periodic(flag, ldfp, lstress, log, lmax, nat, ntyp, types, lat, rxyz, znuc, natx,  cutoff,
+                    sfp, lfp, dfp, dfpe);
   
 
     shortfp = PyList_New(0);
@@ -320,6 +344,24 @@ static PyObject * py_get_periodic(PyObject *self, PyObject *args)
             PyList_Append( outdfp, vec );
             Py_DECREF(vec);
         }
+        if (lstress > 0) {
+            outdfpe = PyList_New(0);
+            for ( i = 0; i < nat; i++ ) {
+                PyObject* atom_list = PyList_New(0);
+                for ( j = 0; j < 6; j++ ) {
+                    vec1 = PyList_New(0);
+                    for ( k = 0; k < natx*lseg; k++ ) {
+                        pytmp = PyFloat_FromDouble( dfpe[i][j][k] );
+                        PyList_Append(vec1, pytmp );
+                        Py_DECREF(pytmp);
+                    }
+                    PyList_Append(atom_list, vec1);
+                    Py_DECREF(vec1);
+                }
+                PyList_Append(outdfpe, atom_list);
+                Py_DECREF(atom_list);
+            }
+        }
     }
 
     array = PyList_New(0);
@@ -328,6 +370,10 @@ static PyObject * py_get_periodic(PyObject *self, PyObject *args)
     if (ldfp > 0) {
         PyList_Append( array, outdfp );
         Py_DECREF(outdfp);
+        if (lstress > 0) {
+            PyList_Append( array, outdfpe );
+            Py_DECREF(outdfpe);
+        }
     }
     Py_DECREF(shortfp);
     Py_DECREF(longfp);
@@ -355,6 +401,21 @@ static PyObject * py_get_periodic(PyObject *self, PyObject *args)
         }
         free(dfp[i]);
         dfp[i] = NULL;
+    }
+    free(dfp);
+    dfp = NULL;
+
+    if (dfpe != NULL) {
+        for (i = 0; i < nat; i++) {
+            for (j = 0; j < 6; j++) {
+                free(dfpe[i][j]);
+                dfpe[i][j] = NULL;
+            }
+            free(dfpe[i]);
+            dfpe[i] = NULL;
+        }
+        free(dfpe);
+        dfpe = NULL;
     }
 
     return array;
@@ -440,10 +501,3 @@ static PyObject * py_get_dist_periodic(PyObject *self, PyObject *args)
     return array;
 
 }
-
-
-
-
-
-
-

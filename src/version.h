@@ -24,6 +24,6 @@
  * ****************************************************************************/
 
 
-#define FPLIB_MAJOR_VERSION 3
-#define FPLIB_MINOR_VERSION 1
-#define FPLIB_MICRO_VERSION 3
+#define FPLIB_MAJOR_VERSION 4
+#define FPLIB_MINOR_VERSION 0
+#define FPLIB_MICRO_VERSION 1

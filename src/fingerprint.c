@@ -42,10 +42,11 @@ void dgemm_(char *TRANSA, char *TRANSB, int *M, int *N, int *K,
 double ddot_(int *N, double *DX, int *INCX, double *DY, int *INCY);
 
 
-void get_fp(int flag, int ldfp, int log, int nat, int ntyp, int ixyz, int nx, int lseg, int l, double lat[3][3],
-        double rxyz[][3], int types[], double rcov[], double cutoff, double **lfp, double **sfp, double ****dfp)
+void get_fp(int flag, int ldfp, int lstress, int log, int nat, int ntyp, int ixyz, int nx, int lseg, int l,
+        double lat[3][3], double rxyz[][3], int types[], double rcov[], double cutoff, double **lfp,
+        double **sfp, double ****dfp, double ***dfpe)
 {
-    int iat, jat, icat, ix, iy, iz, il, i, j, k, i1, i2, i3, i4;
+    int iat, jat, icat, ix, iy, iz, il, i, j, k, i1, i2, i3, i4, ik;
     int iats, iorb, iiat;
     int n_sphere, ityp_sphere, nid, nids = l*(ntyp+1);
     int n_sphere_min = 1000000;
@@ -62,7 +63,7 @@ void get_fp(int flag, int ldfp, int log, int nat, int ntyp, int ixyz, int nx, in
     double fc, wc, amp_tmp;
 
     double **om, **aom, *pvec, **pvecs;
-    double ****dom, ***dvdr;
+    double ****dom;
     double omx[nids][nids], omy[nids][nids];
 
     int lda, ldb, ldc, info, lwork;
@@ -78,13 +79,28 @@ void get_fp(int flag, int ldfp, int log, int nat, int ntyp, int ixyz, int nx, in
     double dalpha = 1.0;
     double dbeta = 0.0;
 
+    const int voigt_alpha[6] = {0, 1, 2, 1, 0, 0};
+    const int voigt_beta[6]  = {0, 1, 2, 2, 2, 1};
+
 
 
     wc = cutoff / sqrt(2.0 * NC);
     fc = 1.0 / (2.0 * NC * wc * wc);
 
+    if (lstress > 0 && ldfp == 0) {
+        fprintf(stderr, "Error: strain derivatives requested without position derivatives.\n");
+        exit(1);
+    }
+
 
     for (iat = 0; iat < nat; iat++) {
+        if (lstress > 0 && dfpe != NULL) {
+            for (i = 0; i < 6; i++) {
+                for (j = 0; j < nx; j++) {
+                    dfpe[iat][i][j] = 0.0;
+                }
+            }
+        }
         xi = rxyz[iat][0];
         yi = rxyz[iat][1];
         zi = rxyz[iat][2];
@@ -138,6 +154,7 @@ void get_fp(int flag, int ldfp, int log, int nat, int ntyp, int ixyz, int nx, in
         }
         n_sphere_min = MIN(n_sphere_min, n_sphere);
         n_sphere_max = MAX(n_sphere_max, n_sphere);
+        // printf("MAX %d\n", n_sphere_min);
 
 
         // big overlap matrix
@@ -307,10 +324,7 @@ void get_fp(int flag, int ldfp, int log, int nat, int ntyp, int ixyz, int nx, in
             }
             get_dom(n_sphere, icat, rxyz_sphere, alpha, amp, damp, om, dom);
 
-
-        
             double *matt, *tmpA;
-            int ik;
             mm = nid;
             nn = nid;
             kk = nid;
@@ -348,13 +362,39 @@ void get_fp(int flag, int ldfp, int log, int nat, int ntyp, int ixyz, int nx, in
                         
                         // update dfp
                         dfp[iat][iiat][ik][iorb] += dot;
+
+                        if (lstress > 0 && dfpe != NULL) {
+                            /* Use relative positions (r_j - r_i) for origin invariance */
+                            // Under strain ε: r'_j - r'_i = (I + ε)(r_j - r_i)
+                            // So ∂fp_i/∂ε_αβ = Σ_j (∂fp_i/∂r_j,α) * (r_j,β - r_i,β)
+                           double rx, ry, rz;
+    
+                           // Use relative positions (r_j - r_i)
+                           rx = rxyz_sphere[iats][0] - xi;  // relative x position
+                           ry = rxyz_sphere[iats][1] - yi;  // relative y position
+                           rz = rxyz_sphere[iats][2] - zi;  // relative z positionkk
+
+                            if (ik == 0) {
+                                dfpe[iat][0][iorb] += dot * rx;            /* εxx */
+                                dfpe[iat][5][iorb] += dot * ry;      /* εxy */
+                                dfpe[iat][4][iorb] += dot * rz;      /* εxz */
+                            } else if (ik == 1) {
+                                dfpe[iat][1][iorb] += dot * ry;            /* εyy */
+                                dfpe[iat][5][iorb] += dot * rx;      /* εxy */
+                                dfpe[iat][3][iorb] += dot * rz;      /* εyz */
+                            } else if (ik == 2) {
+                                dfpe[iat][2][iorb] += dot * rz;            /* εzz */
+                                dfpe[iat][4][iorb] += dot * rx;      /* εxz */
+                                dfpe[iat][3][iorb] += dot * ry;      /* εyz */
+                            }
+                        }
                     }
 
                 }
             }
             free(tmpA);
             free(matt);
-               
+
             //free dom
             for (i = 0; i < nid; i++)
             {
@@ -438,6 +478,14 @@ void get_fp(int flag, int ldfp, int log, int nat, int ntyp, int ixyz, int nx, in
         free(aom);
         free(pvec);
         free(pvecs);
+
+        if (lstress > 0 && dfpe != NULL) {
+            for (i4 = 0; i4 < 6; i4++) {
+                for (i = nid; i < nx; i++) {
+                    dfpe[iat][i4][i] = 0.0;
+                }
+            }
+        }
 
 
     }

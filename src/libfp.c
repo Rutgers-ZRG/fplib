@@ -124,8 +124,9 @@ void get_fp_nonperiodic(int nid, int nat, int ntyp, int types[], double rxyz[][3
 
 
 
-void get_fp_periodic(int flag, int ldfp, int log, int lmax, int nat, int ntyp, int types[], double lat[3][3],
-        double rxyz[][3], int znucl[], int natx, double cutoff, double **sfp, double **lfp, double ****dfp)
+void get_fp_periodic(int flag, int ldfp, int lstress, int log, int lmax, int nat, int ntyp, int types[], double lat[3][3],
+        double rxyz[][3], int znucl[], int natx, double cutoff, double **sfp, double **lfp, double ****dfp,
+        double ***dfpe)
 {
     int i, ixyz;
     double rcov[nat];
@@ -150,7 +151,8 @@ void get_fp_periodic(int flag, int ldfp, int log, int lmax, int nat, int ntyp, i
     ixyz = get_ixyz(lat, cutoff);
 
     /* flag = 0: long fp only;  = 1: long and short fp */
-    get_fp(flag, ldfp, log, nat, ntyp, ixyz, natx, lseg, l, lat, rxyz, types, rcov,  cutoff, lfp, sfp, dfp);
+    get_fp(flag, ldfp, lstress, log, nat, ntyp, ixyz, natx, lseg, l, lat, rxyz, types, rcov, cutoff,
+           lfp, sfp, dfp, dfpe);
 
 }
 
@@ -163,7 +165,7 @@ double get_fpdistance_periodic(int nat, int ntyp, int types[], int fp_len,
     }
 
     double fpd = 0.0, cc = 0.0, tt = 0.0, **costmp = NULL, *a = NULL;
-    int iat, jat, ityp, i, j, k, ii, jj, inat = 0, *ft = NULL;
+    int iat, jat, ityp, i, j, k, ii, jj, *ft = NULL;
 
     // Initialize all elements of f array to -1 (invalid index)
     // so we can identify uninitialized values later
@@ -219,9 +221,12 @@ double get_fpdistance_periodic(int nat, int ntyp, int types[], int fp_len,
             return -1.0;
         }
         
-        // Reset inat for each type - using a mapping table instead
-        int *atom_indices = (int *)malloc(sizeof(int) * i);
-        if (!atom_indices) {
+        // Create a mapping table for atoms of this type
+        int *atom_indices_1 = (int *)malloc(sizeof(int) * i);
+        int *atom_indices_2 = (int *)malloc(sizeof(int) * i);
+        if (!atom_indices_1 || !atom_indices_2) {
+            free(atom_indices_1);
+            free(atom_indices_2);
             free(ft);
             free(a);
             for (j = 0; j < nat; j++) free(costmp[j]);
@@ -229,27 +234,45 @@ double get_fpdistance_periodic(int nat, int ntyp, int types[], int fp_len,
             return -1.0;
         }
         
+        // Map atoms to their positions in the original arrays
         int idx_i = 0;
         for (iat = 0; iat < nat; iat++) {
             if (types[iat] == ityp) {
-                atom_indices[idx_i] = iat; // Remember original atom index
-                int idx_j = 0;
-                for (jat = 0; jat < nat; jat++) {
-                    if (types[jat] == ityp) {
-                        tt = 0.0;
-                        for (k = 0; k < fp_len; k++) {
-                            double diff = fp1[iat][k] - fp2[jat][k];
-                            tt += diff * diff;
-                        }
-                        costmp[idx_i][idx_j] = sqrt(tt);
-                        idx_j++;
-                    }
-                }
+                atom_indices_1[idx_i] = iat; // Original atom index in structure 1
                 idx_i++;
             }
         }
         
-        // Copy costmp into a
+        // Fill cost matrix for atoms of this type
+        for (ii = 0; ii < i; ii++) {
+            iat = atom_indices_1[ii];
+            for (jj = 0; jj < i; jj++) {
+                // Find jj-th atom of this type
+                int idx_j = 0, found_j = 0;
+                for (jat = 0; jat < nat; jat++) {
+                    if (types[jat] == ityp) {
+                        if (idx_j == jj) {
+                            atom_indices_2[jj] = jat; // Save the index for later
+                            found_j = 1;
+                            break;
+                        }
+                        idx_j++;
+                    }
+                }
+                
+                if (found_j) {
+                    jat = atom_indices_2[jj];
+                    tt = 0.0;
+                    for (k = 0; k < fp_len; k++) {
+                        double diff = fp1[iat][k] - fp2[jat][k];
+                        tt += diff * diff;
+                    }
+                    costmp[ii][jj] = sqrt(tt);
+                }
+            }
+        }
+        
+        // Copy costmp into a for APC algorithm
         for (ii = 0; ii < i; ii++) {
             for (jj = 0; jj < i; jj++) {
                 a[ii * i + jj] = costmp[ii][jj];
@@ -263,21 +286,24 @@ double get_fpdistance_periodic(int nat, int ntyp, int types[], int fp_len,
             // Handle error
             free(ft);
             free(a);
-            free(atom_indices);
+            free(atom_indices_1);
+            free(atom_indices_2);
             for (j = 0; j < nat; j++) free(costmp[j]);
             free(costmp);
             return -1.0;
         }
 
-        // Update f with correct atom indices
-        for (k = 0; k < i; k++) {
-            int orig_atom_idx = atom_indices[k];
-            f[orig_atom_idx] = ft[k];
+        // Set mappings based on APC results
+        for (ii = 0; ii < i; ii++) {
+            int orig_idx = atom_indices_1[ii];
+            int mapped_idx = atom_indices_2[ft[ii]];
+            f[orig_idx] = mapped_idx;
         }
 
         free(ft);
         free(a);
-        free(atom_indices);
+        free(atom_indices_1);
+        free(atom_indices_2);
         ft = NULL;
         a = NULL;
         fpd += cc;
